@@ -1,0 +1,7 @@
+
+tailscale/
+build-multi.sh
+tailscale.tar
+tailscale-arm32.tar
+tailscale-arm64.tar
+tailscale-arm32.tar tailscale-arm64.tar
