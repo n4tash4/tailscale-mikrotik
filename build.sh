@@ -64,6 +64,25 @@ build_arch() {
       --platform "${_platform}" \
       --load -t "ghcr.io/fluent-networks/tailscale-mikrotik:${VERSION}-${_name}" .
 
+    # RouterOS can't run images with an empty layer twice / any duplicate layer
+    # (duplicate overlayfs lowerdir -> "could not mount overlayfs root").
+    # Reject them here rather than discovering it on the router.
+    _layers=$(docker image inspect \
+      --format '{{range .RootFS.Layers}}{{println .}}{{end}}' \
+      "ghcr.io/fluent-networks/tailscale-mikrotik:${VERSION}-${_name}" | sed '/^$/d')
+    _dups=$(printf '%s\n' "$_layers" | sort | uniq -d)
+    if [ -n "$_dups" ]; then
+        echo "ERROR: image has duplicate layers (RouterOS overlayfs will fail):" >&2
+        printf '  %s\n' $_dups >&2
+        exit 1
+    fi
+    # sha256 of an empty layer tar: fine once, but flag it so it can't creep in.
+    if printf '%s\n' "$_layers" | grep -q '5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef'; then
+        echo "ERROR: image has an empty layer (a RUN/COPY that changed nothing)." >&2
+        exit 1
+    fi
+    echo ">>> Layer check OK ($(printf '%s\n' "$_layers" | wc -l | tr -d ' ') layers, no duplicates/empties)"
+
     skopeo copy \
       "docker-daemon:ghcr.io/fluent-networks/tailscale-mikrotik:${VERSION}-${_name}" \
       "docker-archive:${_out}"

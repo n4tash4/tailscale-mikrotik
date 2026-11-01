@@ -125,15 +125,25 @@ COPY tailscale.sh /usr/local/bin
 
 # Read-only JSON status endpoint (busybox httpd CGI, port 8088). Consumed by
 # the RouterOS ts-primary script to gate the BGP export of 100.64.0.0/10.
-COPY ts-status.cgi /www/cgi-bin/status
-RUN chmod 0755 /www/cgi-bin/status
+#
+# RouterOS LAYER RULE: every layer must change the filesystem. RouterOS stores
+# layers by content digest and stacks them as overlayfs lowerdirs, so two
+# identical layers (e.g. two empty ones, digest 5f70bf18...) become a duplicate
+# lowerdir and the container fails with "could not mount overlayfs root".
+# Hence --chmod on the COPY (a separate no-op `RUN chmod` is an empty layer)
+# and the smoke test below writes its result into the image. build.sh rejects
+# images with empty or duplicate layers.
+COPY --chmod=0755 ts-status.cgi /www/cgi-bin/status
 
 # Build-time smoke test: proves busybox httpd has CGI support and the CGI
-# renders valid, fail-closed JSON when tailscaled is not running.
+# renders valid, fail-closed JSON when tailscaled is not running. The result is
+# kept (outside the httpd docroot) so this layer is never empty.
 RUN busybox httpd -f -u nobody -p 127.0.0.1:18088 -h /www & pid=$!; sleep 1; \
     out=$(curl -fsS http://127.0.0.1:18088/cgi-bin/status) && \
     echo "status smoke test: $out" && \
-    echo "$out" | jq -e '.schema == 1 and .gate.primary == false' >/dev/null; \
+    echo "$out" | jq -e '.schema == 1 and .gate.primary == false' >/dev/null && \
+    mkdir -p /usr/share/ts-status && \
+    echo "$out" > /usr/share/ts-status/build-smoke-test.json; \
     rc=$?; kill "$pid"; exit $rc
 
 EXPOSE 8088
