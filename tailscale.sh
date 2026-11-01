@@ -42,6 +42,39 @@ if [[ -n "${STARTUP_SCRIPT}" && -f "${STARTUP_SCRIPT}" ]]; then
        bash "${STARTUP_SCRIPT}" || exit $?
 fi
 
+# Start the read-only status endpoint (JSON at /cgi-bin/status).
+# Started before tailscaled so RouterOS gets a fail-closed answer
+# (gate.primary=false) while Tailscale is still coming up.
+#   STATUS_LISTEN       [ip:]port to bind, or "off" to disable.
+#                       Default: <first global IPv4 on the veth>:8088
+#   STATUS_GATE_PREFIX  prefix whose primary-ness drives .gate.primary.
+#                       Default: first entry of ADVERTISE_ROUTES.
+if [[ "${STATUS_LISTEN}" != "off" ]]; then
+  if [[ -z "${STATUS_LISTEN}" ]]; then
+    STATUS_IP=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n1)
+    STATUS_LISTEN="${STATUS_IP:+${STATUS_IP}:}8088"
+  fi
+  if [[ -z "${STATUS_GATE_PREFIX}" ]]; then
+    STATUS_GATE_PREFIX="${ADVERTISE_ROUTES%%,*}"
+  fi
+  # Only non-secret values go into the CGI's config file.
+  printf 'ADVERTISE_ROUTES=%q\nGATE_PREFIX=%q\n' \
+    "${ADVERTISE_ROUTES}" "${STATUS_GATE_PREFIX}" > /etc/ts-status.conf
+  chmod 0644 /etc/ts-status.conf
+  # env -i: httpd and its CGIs start with a clean environment, so AUTH_KEY /
+  # PASSWORD are never visible to request handling. -u nobody: the CGI only
+  # needs read-only LocalAPI access (tailscale status). Restart if it exits.
+  (
+    while :; do
+      env -i PATH=/usr/local/bin:/usr/bin:/bin \
+        busybox httpd -f -u nobody -p "${STATUS_LISTEN}" -h /www
+      echo "status httpd exited ($?); restarting in 2s" >&2
+      sleep 2
+    done
+  ) &
+  echo "Status endpoint on http://${STATUS_LISTEN}/cgi-bin/status (gate ${STATUS_GATE_PREFIX})"
+fi
+
 # Start tailscaled and bring tailscale up
 /usr/local/bin/tailscaled ${TAILSCALED_ARGS} &
 until /usr/local/bin/tailscale up \
@@ -74,4 +107,5 @@ fi
 # Start SSH
 /usr/sbin/sshd -D
 
-fg %1
+# Foreground tailscaled by name (job %1 is now the status httpd loop).
+fg %/usr/local/bin/tailscaled

@@ -98,7 +98,7 @@ FROM ${RUNTIME_BASE}
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      ca-certificates iptables iproute2 bash openssh-server curl jq && \
+      ca-certificates iptables iproute2 bash openssh-server curl jq busybox && \
     rm -rf /var/lib/apt/lists/*
 
 # Use iptables-legacy for compatibility with the container runtime
@@ -114,6 +114,21 @@ COPY --from=build-env /go/bin/tailscale /usr/local/bin/
 COPY --from=build-env /go/bin/tailscaled /usr/local/bin/
 COPY sshd_config /etc/ssh/
 COPY tailscale.sh /usr/local/bin
+
+# Read-only JSON status endpoint (busybox httpd CGI, port 8088). Consumed by
+# the RouterOS ts-primary script to gate the BGP export of 100.64.0.0/10.
+COPY ts-status.cgi /www/cgi-bin/status
+RUN chmod 0755 /www/cgi-bin/status
+
+# Build-time smoke test: proves busybox httpd has CGI support and the CGI
+# renders valid, fail-closed JSON when tailscaled is not running.
+RUN busybox httpd -f -u nobody -p 127.0.0.1:18088 -h /www & pid=$!; sleep 1; \
+    out=$(curl -fsS http://127.0.0.1:18088/cgi-bin/status) && \
+    echo "status smoke test: $out" && \
+    echo "$out" | jq -e '.schema == 1 and .gate.primary == false' >/dev/null; \
+    rc=$?; kill "$pid"; exit $rc
+
+EXPOSE 8088
 
 EXPOSE 22
 CMD ["/usr/local/bin/tailscale.sh"]
