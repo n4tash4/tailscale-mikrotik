@@ -98,7 +98,7 @@ FROM ${RUNTIME_BASE}
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      ca-certificates iptables iproute2 bash openssh-server curl jq busybox && \
+      ca-certificates iptables iproute2 bash openssh-server curl jq busybox tini && \
     rm -rf /var/lib/apt/lists/*
 
 # Use iptables-legacy for compatibility with the container runtime
@@ -131,4 +131,10 @@ RUN busybox httpd -f -u nobody -p 127.0.0.1:18088 -h /www & pid=$!; sleep 1; \
 EXPOSE 8088
 
 EXPOSE 22
+
+# tini is PID 1: reaps orphaned/zombie processes and forwards the RouterOS
+# stop-signal to tailscale.sh, which shuts tailscaled down gracefully.
+# RouterOS `cmd=` overrides CMD only, so tini stays in place as long as the
+# container's `entrypoint` property is left empty.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/usr/local/bin/tailscale.sh"]

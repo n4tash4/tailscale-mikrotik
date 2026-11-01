@@ -1,6 +1,37 @@
 #!/bin/bash
+#
+# Process model
+# -------------
+# PID 1 is tini (Dockerfile ENTRYPOINT): it reaps orphaned/zombie processes
+# (e.g. CGI children left behind if httpd dies mid-request) and forwards the
+# RouterOS stop-signal (SIGTERM by default) to this script.
+#
+# This script supervises three children and the container's lifetime follows
+# tailscaled: if tailscaled exits, everything is stopped and the script exits
+# with tailscaled's status (pair with RouterOS restart-policy=on-failure).
+# On SIGTERM/SIGINT tailscaled is stopped gracefully so it can tell control it
+# is going away (faster subnet-router failover than waiting for a timeout).
+#
+# Long-running steps run in the background + `wait`, because bash only runs a
+# trap after the current foreground command returns; `wait` returns as soon
+# as a trapped signal arrives.
 
-set -m
+TAILSCALED_PID=""
+SSHD_PID=""
+STATUS_PID=""
+
+shutdown() {
+  trap - TERM INT
+  echo "Stop signal received; shutting down"
+  [[ -n "${SSHD_PID}" ]]   && kill -TERM "${SSHD_PID}"   2>/dev/null
+  [[ -n "${STATUS_PID}" ]] && kill -TERM "${STATUS_PID}" 2>/dev/null
+  if [[ -n "${TAILSCALED_PID}" ]] && kill -0 "${TAILSCALED_PID}" 2>/dev/null; then
+    kill -TERM "${TAILSCALED_PID}" 2>/dev/null
+    wait "${TAILSCALED_PID}"
+  fi
+  exit 0
+}
+trap shutdown TERM INT
 
 # Enable IP forwarding
 echo 'net.ipv4.ip_forward = 1' | tee -a /etc/sysctl.conf
@@ -65,25 +96,39 @@ if [[ "${STATUS_LISTEN}" != "off" ]]; then
   # PASSWORD are never visible to request handling. -u nobody: the CGI only
   # needs read-only LocalAPI access (tailscale status). Restart if it exits.
   (
+    hp=""
+    trap '[[ -n "$hp" ]] && kill -TERM "$hp" 2>/dev/null; exit 0' TERM INT
     while :; do
       env -i PATH=/usr/local/bin:/usr/bin:/bin \
-        busybox httpd -f -u nobody -p "${STATUS_LISTEN}" -h /www
+        busybox httpd -f -u nobody -p "${STATUS_LISTEN}" -h /www &
+      hp=$!
+      wait "$hp"
       echo "status httpd exited ($?); restarting in 2s" >&2
-      sleep 2
+      sleep 2 & wait $!
     done
   ) &
+  STATUS_PID=$!
   echo "Status endpoint on http://${STATUS_LISTEN}/cgi-bin/status (gate ${STATUS_GATE_PREFIX})"
 fi
 
 # Start tailscaled and bring tailscale up
 /usr/local/bin/tailscaled ${TAILSCALED_ARGS} &
-until /usr/local/bin/tailscale up \
-  --reset --authkey="${AUTH_KEY}" \
-	--login-server "${LOGIN_SERVER}" \
-	--advertise-routes="${ADVERTISE_ROUTES}" \
-  ${TAILSCALE_ARGS}
-do
-    sleep 0.1
+TAILSCALED_PID=$!
+while :; do
+  /usr/local/bin/tailscale up \
+    --reset --authkey="${AUTH_KEY}" \
+    --login-server "${LOGIN_SERVER}" \
+    --advertise-routes="${ADVERTISE_ROUTES}" \
+    ${TAILSCALE_ARGS} &
+  wait $! && break
+  # Don't spin forever if tailscaled itself has died.
+  if ! kill -0 "${TAILSCALED_PID}" 2>/dev/null; then
+    wait "${TAILSCALED_PID}"; rc=$?
+    echo "tailscaled exited (${rc}) before tailscale up succeeded" >&2
+    [[ -n "${STATUS_PID}" ]] && kill -TERM "${STATUS_PID}" 2>/dev/null
+    exit "${rc:-1}"
+  fi
+  sleep 0.1
 done
 echo Tailscale started
 
@@ -105,7 +150,15 @@ if [[ -n "${RUNNING_SCRIPT}" && -f "${RUNNING_SCRIPT}" ]]; then
 fi
 
 # Start SSH
-/usr/sbin/sshd -D
+/usr/sbin/sshd -D &
+SSHD_PID=$!
 
-# Foreground tailscaled by name (job %1 is now the status httpd loop).
-fg %/usr/local/bin/tailscaled
+# Container lifetime follows tailscaled. `wait` is interrupted by the trap on
+# SIGTERM/SIGINT (shutdown() then exits), so loop until tailscaled is gone.
+while kill -0 "${TAILSCALED_PID}" 2>/dev/null; do
+  wait "${TAILSCALED_PID}"; rc=$?
+done
+echo "tailscaled exited (${rc:-?}); stopping container" >&2
+[[ -n "${SSHD_PID}" ]]   && kill -TERM "${SSHD_PID}"   2>/dev/null
+[[ -n "${STATUS_PID}" ]] && kill -TERM "${STATUS_PID}" 2>/dev/null
+exit "${rc:-1}"
