@@ -46,8 +46,14 @@ build_arch() {
     echo ">>> Building ${_name}  (${_platform}, GOARCH=${_goarch} GOARM=${_goarm:-none}) -> ${_out}"
     rm -f "${_out}"
 
+    # Layer cache is ON (go.mod/go.sum + `go mod download` layers get reused).
+    # --pull re-checks the base images every build, so a new golang or
+    # debian:bookworm-slim (security updates) invalidates the cache below it
+    # instead of a stale apt layer living forever. NO_CACHE=1 forces a clean
+    # rebuild.
+    # shellcheck disable=SC2086
     docker buildx build \
-      --no-cache \
+      --pull ${_nocache} \
       --build-arg TAILSCALE_VERSION="$TAILSCALE_VERSION" \
       --build-arg VERSION_LONG="$VERSION_LONG" \
       --build-arg VERSION_SHORT="$VERSION_SHORT" \
@@ -72,6 +78,26 @@ if [ ! -d ./tailscale/.git ]
 then
     git -c advice.detachedHead=false clone https://github.com/tailscale/tailscale.git --branch v$TAILSCALE_VERSION
 fi
+
+# An existing checkout is NOT automatically on TAILSCALE_VERSION (the clone
+# above only runs once). Move it to the requested tag, refusing if there are
+# local changes so a patched tree is never silently discarded.
+_have=$(cat ./tailscale/VERSION.txt)
+if [ "$_have" != "$TAILSCALE_VERSION" ]
+then
+    if [ -n "$(git -C ./tailscale status --porcelain)" ]; then
+        echo "ERROR: ./tailscale is $_have with local changes; wanted $TAILSCALE_VERSION." >&2
+        echo "       Commit/stash them, then re-run." >&2
+        exit 1
+    fi
+    echo ">>> Moving ./tailscale from $_have to v$TAILSCALE_VERSION"
+    git -C ./tailscale fetch --depth 1 origin tag "v$TAILSCALE_VERSION"
+    git -C ./tailscale -c advice.detachedHead=false checkout "v$TAILSCALE_VERSION"
+fi
+
+# NO_CACHE=1 ./build.sh  -> full clean rebuild (old behaviour).
+_nocache=""
+if [ "${NO_CACHE:-}" = "1" ]; then _nocache="--no-cache"; fi
 
 TS_USE_TOOLCHAIN="Y"
 cd tailscale && eval $(./build_dist.sh shellvars) && cd ..

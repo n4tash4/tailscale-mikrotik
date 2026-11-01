@@ -48,6 +48,14 @@ RUN go install \
 
 COPY tailscale/. .
 
+# Guard against building a different Tailscale tree than build.sh asked for
+# (e.g. TAILSCALE_VERSION bumped but ./tailscale still on the old tag).
+# Empty = skip the check (plain `docker build` without build.sh).
+ARG TAILSCALE_VERSION=""
+RUN if [ -n "${TAILSCALE_VERSION}" ] && [ "$(cat VERSION.txt)" != "${TAILSCALE_VERSION}" ]; then \
+      echo "ERROR: ./tailscale is $(cat VERSION.txt), expected ${TAILSCALE_VERSION}" >&2; exit 1; \
+    fi
+
 # see build.sh
 ARG VERSION_LONG=""
 ENV VERSION_LONG=$VERSION_LONG
@@ -137,4 +145,9 @@ EXPOSE 22
 # RouterOS `cmd=` overrides CMD only, so tini stays in place as long as the
 # container's `entrypoint` property is left empty.
 ENTRYPOINT ["/usr/bin/tini", "--"]
+
+# Record the Tailscale version in the image metadata (declared last so a
+# version bump doesn't invalidate the cached apt layer above).
+ARG TAILSCALE_VERSION=""
+LABEL net.tailscale.version="${TAILSCALE_VERSION}"
 CMD ["/usr/local/bin/tailscale.sh"]
