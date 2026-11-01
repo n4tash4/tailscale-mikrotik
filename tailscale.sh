@@ -2,9 +2,11 @@
 #
 # Process model
 # -------------
-# PID 1 is tini (Dockerfile ENTRYPOINT): it reaps orphaned/zombie processes
-# (e.g. CGI children left behind if httpd dies mid-request) and forwards the
-# RouterOS stop-signal (SIGTERM by default) to this script.
+# PID 1 is ts-init (Dockerfile ENTRYPOINT, source in init/): it reaps
+# orphaned/zombie processes (e.g. CGI children left behind if httpd dies
+# mid-request) and forwards the RouterOS stop-signal (SIGTERM by default) to
+# this script. RouterOS only delivers the stop-signal if PID 1 has a handler
+# installed for it, which is why this isn't tini.
 #
 # This script supervises three children and the container's lifetime follows
 # tailscaled: if tailscaled exits, everything is stopped and the script exits

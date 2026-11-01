@@ -28,6 +28,18 @@ ARG RUNTIME_BASE=arm32v5/debian:bookworm-slim
 # to the target arch via GOARCH/GOARM below. This avoids needing an arm/v5
 # variant of the golang image (which doesn't exist) and is much faster since
 # it runs natively rather than under emulation.
+# ts-init: the container's PID 1 (see init/main.go for why not tini). Own
+# stage so it's cached independently of the Tailscale source. Cross-compiled
+# with the same GOARCH/GOARM as tailscaled (GOARM=5 soft-float for arm32v5).
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS init-build
+ARG TARGETPLATFORM_GOARCH=arm
+ARG TARGETPLATFORM_GOARM=5
+WORKDIR /src
+COPY init/ .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETPLATFORM_GOARCH} GOARM=${TARGETPLATFORM_GOARM} GOTOOLCHAIN=local \
+      go build -trimpath -ldflags="-s -w" -o /out/ts-init . && \
+    go version -m /out/ts-init | grep -E 'GOARCH|GOARM'
+
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build-env
 
 WORKDIR /go/src/tailscale
@@ -106,7 +118,7 @@ FROM ${RUNTIME_BASE}
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      ca-certificates iptables iproute2 bash openssh-server curl jq busybox tini && \
+      ca-certificates iptables iproute2 bash openssh-server curl jq busybox && \
     rm -rf /var/lib/apt/lists/*
 
 # Use iptables-legacy for compatibility with the container runtime
@@ -120,6 +132,7 @@ RUN mkdir -p /var/run/sshd
 
 COPY --from=build-env /go/bin/tailscale /usr/local/bin/
 COPY --from=build-env /go/bin/tailscaled /usr/local/bin/
+COPY --from=init-build /out/ts-init /usr/local/sbin/ts-init
 COPY sshd_config /etc/ssh/
 COPY tailscale.sh /usr/local/bin
 
@@ -150,11 +163,12 @@ EXPOSE 8088
 
 EXPOSE 22
 
-# tini is PID 1: reaps orphaned/zombie processes and forwards the RouterOS
-# stop-signal to tailscale.sh, which shuts tailscaled down gracefully.
-# RouterOS `cmd=` overrides CMD only, so tini stays in place as long as the
+# ts-init is PID 1: reaps orphaned/zombie processes and forwards the RouterOS
+# stop-signal to tailscale.sh, which shuts tailscaled down gracefully. It must
+# install real signal handlers (tini doesn't, so RouterOS SIGKILLs it at once).
+# RouterOS `cmd=` overrides CMD only, so ts-init stays in place as long as the
 # container's `entrypoint` property is left empty.
-ENTRYPOINT ["/usr/bin/tini", "--"]
+ENTRYPOINT ["/usr/local/sbin/ts-init", "--"]
 
 # Record the Tailscale version in the image metadata (declared last so a
 # version bump doesn't invalidate the cached apt layer above).
