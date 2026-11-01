@@ -62,7 +62,7 @@ printf '%s' "$st" | jq -c \
         prefix:  $gate,
         primary: ($gate != "" and $running and $isPrimary),
         reason:  (if $gate == "" then "no gate prefix configured"
-                  elif ($running | not) then "tailscaled not running"
+                  elif ($running | not) then "backend " + (.BackendState // "unreachable")
                   elif ($isPrimary | not) then "standby"
                   else "primary" end)
       },
