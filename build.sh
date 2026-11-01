@@ -25,8 +25,8 @@
 #   docker run --privileged --rm tonistiigi/binfmt --install all
 ############################################################################
 
-TAILSCALE_VERSION=1.102.4
-VERSION=0.1.40
+TAILSCALE_VERSION=1.104.4
+VERSION=0.1.41
 
 set -eu
 
