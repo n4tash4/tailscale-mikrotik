@@ -31,7 +31,7 @@ ARG RUNTIME_BASE=arm32v5/debian:bookworm-slim
 # ts-init: the container's PID 1 (see init/main.go for why not tini). Own
 # stage so it's cached independently of the Tailscale source. Cross-compiled
 # with the same GOARCH/GOARM as tailscaled (GOARM=5 soft-float for arm32v5).
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS init-build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS init-build
 ARG TARGETPLATFORM_GOARCH=arm
 ARG TARGETPLATFORM_GOARM=5
 WORKDIR /src
@@ -40,7 +40,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETPLATFORM_GOARCH} GOARM=${TARGETPLATF
       go build -trimpath -ldflags="-s -w" -o /out/ts-init . && \
     go version -m /out/ts-init | grep -E 'GOARCH|GOARM'
 
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build-env
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build-env
 
 WORKDIR /go/src/tailscale
 
